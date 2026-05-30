@@ -1,0 +1,9 @@
+github.com/asticode/go-astikit v0.2.0/go.mod h1:h4ly7idim1tNhaVkdVBeXQZEE3L0xblP7fCWbgwipF0=
+github.com/asticode/go-astikit v0.59.0 h1:tjbwDym+MTSxqkAhJoHRZmHMXK6Jv4vGx+97FptKH6k=
+github.com/asticode/go-astikit v0.59.0/go.mod h1:fV43j20UZYfXzP9oBn33udkvCvDvCDhzjVqoLFuuYZE=
+github.com/asticode/go-astitello v0.4.0 h1:A2T0YMF1yA29JhRoS7MeRzJshoqMdPMRbiiEp32hERg=
+github.com/asticode/go-astitello v0.4.0/go.mod h1:Ychkw9bVWtAXukU4ywTmxpGVrdndYUuyqAmh+8vB21U=
+github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203 h1:XBBHcIb256gUJtLmY22n99HaZTz+r2Z51xUPi01m3wg=
+github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203/go.mod h1:E1jcSv8FaEny+OP/5k9UxZVw9YFWGj7eI4KR/iOBqCg=
+golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a h1:dGzPydgVsqGcTRVwiLJ1jVbufYwmzD3LfVPLKsKg+0k=
+golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
