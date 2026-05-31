@@ -4,124 +4,182 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/asticode/go-astikit"
-	"github.com/asticode/go-astitello"
-	"github.com/eiannone/keyboard"
+	"github.com/AntonioMartinezFernandez/dji-drone-go/internal/control"
+	astitello "github.com/asticode/go-astitello"
+	"github.com/gdamore/tcell/v2"
 )
 
+// Stick speed values sent to the drone (-100 to 100).
+const stickSpeed = 60
+
+// keyHoldTimeout: if no repeat event arrives within this duration, the key is
+// considered released and its axis is zeroed. OS key-repeat fires every ~30ms,
+// so 150ms gives comfortable margin.
+const keyHoldTimeout = 150 * time.Millisecond
+
+// rcTicker controls how often SetSticks is sent to the drone (~20 Hz).
+const rcTickInterval = 50 * time.Millisecond
+
 func main() {
-	l := log.New(log.Writer(), log.Prefix(), log.Flags())
-
-	worker := astikit.NewWorker(astikit.WorkerOptions{Logger: l})
-	drone := astitello.New(l)
-	worker.HandleSignals(astikit.TermSignalHandler(func() {
-		if err := drone.Land(); err != nil {
-			l.Println(fmt.Errorf("main: landing failed: %w\n", err))
-			return
-		}
-	}))
-
-	drone.On(astitello.TakeOffEvent, func(any) { l.Println("main: drone has took off!") })
-	if err := drone.Start(); err != nil {
-		l.Println(fmt.Errorf("main: starting to the drone failed: %w", err))
-		return
-	}
-	defer drone.Close()
-
-	err := keyboard.Open()
+	logFile, err := os.OpenFile("dji-drone.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		l.Printf("Failed to open keyboard: %v", err)
+		fmt.Fprintf(os.Stderr, "cannot open log file: %v\n", err)
 		os.Exit(1)
 	}
-	defer keyboard.Close()
+	defer logFile.Close()
+	l := log.New(logFile, "", log.LstdFlags)
 
-	fmt.Println("------------------------------")
-	fmt.Println("           CONTROLS")
-	fmt.Println("------------------------------")
-	fmt.Println(" T - Take off")
-	fmt.Println(" L - Land")
-	fmt.Println("------------------------------")
-	fmt.Println(" P - Flip right")
-	fmt.Println(" O - Flip left")
-	fmt.Println("------------------------------")
-	fmt.Println(" W - Move forward")
-	fmt.Println(" S - Move backward")
-	fmt.Println(" A - Move left")
-	fmt.Println(" D - Move right")
-	fmt.Println("------------------------------")
-	fmt.Println(" U - Move up")
-	fmt.Println(" J - Move down")
-	fmt.Println("------------------------------")
-	fmt.Println(" ESC - Exit")
-	fmt.Println("------------------------------")
+	drone := astitello.New(l)
 
+	l.Println("Connecting to Tello…")
+	if err := drone.Start(); err != nil {
+		l.Fatalf("start: %v", err)
+	}
+	defer drone.Close()
+	l.Println("Connected!")
+
+	drone.On(astitello.TakeOffEvent, func(_ interface{}) { l.Println("took off") })
+	drone.On(astitello.LandEvent, func(_ interface{}) { l.Println("landed") })
+
+	// Graceful shutdown on SIGINT/SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		_ = drone.Land()
+		drone.Close()
+		os.Exit(0)
+	}()
+
+	screen, err := tcell.NewScreen()
+	if err != nil {
+		l.Fatalf("screen: %v", err)
+	}
+	if err := screen.Init(); err != nil {
+		l.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.EnableMouse() // not needed but harmless
+
+	st := &control.Sticks{}
+	ks := control.NewKeyState(keyHoldTimeout)
+	sb := &control.StatusBar{Msg: "Ready — press T to take off", Col: tcell.ColorGreen}
+
+	control.DrawAll(screen, st, sb)
+
+	// ── RC ticker: send sticks to drone at ~20 Hz ─────────────────────────────
+	go func() {
+		ticker := time.NewTicker(rcTickInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			lr, fb, ud, y := st.Get()
+			if err := drone.SetSticks(lr, fb, ud, y); err != nil {
+				sb.Set(fmt.Sprintf("SetSticks error: %v", err), tcell.ColorRed)
+			}
+		}
+	}()
+
+	// ── UI refresh ticker ─────────────────────────────────────────────────────
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for range ticker.C {
+			control.DrawAll(screen, st, sb)
+		}
+	}()
+
+	// ── Event loop ────────────────────────────────────────────────────────────
 	for {
-		char, key, err := keyboard.GetKey()
+		ev := screen.PollEvent()
+		switch ev := ev.(type) {
 
-		if err != nil {
-			l.Printf("Failed to get keyboard input: %v\n", err)
+		case *tcell.EventResize:
+			screen.Sync()
+			control.DrawAll(screen, st, sb)
+
+		case *tcell.EventKey:
+			// Single-shot commands (take-off, land, flip) are sent in a goroutine
+			// so they don't block the input loop.
+			switch ev.Key() {
+			case tcell.KeyEscape, tcell.KeyCtrlC:
+				sb.Set("Landing…", tcell.ColorYellow)
+				control.DrawAll(screen, st, sb)
+				_ = drone.Land()
+				screen.Fini()
+				fmt.Println("Drone landed. Bye!")
+				return
+			}
+
+			neg := func(v int) int { return -v }
+			_ = neg
+
+			switch ev.Rune() {
+			// ── Take-off / Land ───────────────────────────────────────────────
+			case 't', 'T':
+				sb.Set("Taking off…", tcell.ColorLightCyan)
+				go func() {
+					if err := drone.TakeOff(); err != nil {
+						sb.Set(fmt.Sprintf("takeoff: %v", err), tcell.ColorRed)
+					} else {
+						sb.Set("Airborne — use WASD/QZ to fly", tcell.ColorGreen)
+					}
+				}()
+			case 'l', 'L':
+				sb.Set("Landing…", tcell.ColorYellow)
+				go func() {
+					if err := drone.Land(); err != nil {
+						sb.Set(fmt.Sprintf("land: %v", err), tcell.ColorRed)
+					} else {
+						sb.Set("Landed", tcell.ColorGreen)
+					}
+				}()
+			case '1':
+				sb.Set("EMERGENCY STOP", tcell.ColorRed)
+				go drone.Emergency()
+
+			// ── Flips (single-shot) ───────────────────────────────────────────
+			case 'i', 'I':
+				sb.Set("Flip forward", tcell.ColorDarkMagenta)
+				go drone.Flip(astitello.FlipForward)
+			case 'k', 'K':
+				sb.Set("Flip backward", tcell.ColorDarkMagenta)
+				go drone.Flip(astitello.FlipBack)
+			case 'j', 'J':
+				sb.Set("Flip left", tcell.ColorDarkMagenta)
+				go drone.Flip(astitello.FlipLeft)
+			case 'o', 'O':
+				sb.Set("Flip right", tcell.ColorDarkMagenta)
+				go drone.Flip(astitello.FlipRight)
+
+			// ── Realtime movement ─────────────────────────────────────────────
+			// Forward / backward  →  FB axis
+			case 'w', 'W':
+				ks.Press(st, control.AxisFB, stickSpeed)
+			case 's', 'S':
+				ks.Press(st, control.AxisFB, -stickSpeed)
+
+			// Strafe left / right  →  LR axis
+			case 'q', 'Q':
+				ks.Press(st, control.AxisLR, -stickSpeed)
+			case 'e', 'E':
+				ks.Press(st, control.AxisLR, stickSpeed)
+
+			// Up / down  →  UD axis
+			case 'r', 'R':
+				ks.Press(st, control.AxisUD, stickSpeed)
+			case 'f', 'F':
+				ks.Press(st, control.AxisUD, -stickSpeed)
+
+			// Yaw left / right  →  Yaw axis
+			case 'a', 'A':
+				ks.Press(st, control.AxisYaw, -stickSpeed)
+			case 'd', 'D':
+				ks.Press(st, control.AxisYaw, stickSpeed)
+			}
 		}
-
-		if key == keyboard.KeyEsc {
-			break
-		}
-
-		switch char {
-
-		case 't', 'T':
-			if err := drone.TakeOff(); err != nil {
-				l.Printf("Failed to take off: %v\n", err)
-			}
-
-		case 'l', 'L':
-			if err := drone.Land(); err != nil {
-				l.Printf("Failed to land: %v\n", err)
-			}
-
-		case 'p', 'P':
-			if err := drone.Flip(astitello.FlipRight); err != nil {
-				l.Printf("Failed to flip: %v\n", err)
-			}
-
-		case 'o', 'O':
-			if err := drone.Flip(astitello.FlipLeft); err != nil {
-				l.Printf("Failed to flip: %v\n", err)
-			}
-
-		case 'w', 'W':
-			if err := drone.Forward(5); err != nil {
-				l.Printf("Failed to move forward: %v\n", err)
-			}
-
-		case 's', 'S':
-			if err := drone.Back(5); err != nil {
-				l.Printf("Failed to move backward: %v\n", err)
-			}
-
-		case 'a', 'A':
-			if err := drone.Left(5); err != nil {
-				l.Printf("Failed to move left: %v\n", err)
-			}
-
-		case 'd', 'D':
-			if err := drone.Right(5); err != nil {
-				l.Printf("Failed to move right: %v\n", err)
-			}
-
-		case 'u', 'U':
-			if err := drone.Up(5); err != nil {
-				l.Printf("Failed to move up: %v\n", err)
-			}
-
-		case 'j', 'J':
-			if err := drone.Down(5); err != nil {
-				l.Printf("Failed to move down: %v\n", err)
-			}
-
-		}
-
-		time.Sleep(10 * time.Millisecond)
 	}
 }

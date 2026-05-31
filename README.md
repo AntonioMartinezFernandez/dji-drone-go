@@ -2,42 +2,18 @@
 
 Experimental Go applications to control DJI drones.
 
-## Naive
+## Basic Flip
 
 Take off, flip, and land.
 
 ```bash
-make naive
+make flip
 ```
 
 ## Keyboard Controller
 
-Control the drone with the keyboard.
+Using the keyboard to control the drone.
 
 ```bash
 make keyboard
-```
-
-Use the following keys to control the drone:
-
-```
-------------------------------
-           CONTROLS
-------------------------------
- T - Take off
- L - Land
-------------------------------
- P - Flip right
- O - Flip left
-------------------------------
- W - Move forward
- S - Move backward
- A - Move left
- D - Move right
-------------------------------
- U - Move up
- J - Move down
-------------------------------
- ESC - Exit
-------------------------------
 ```

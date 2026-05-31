@@ -1,7 +1,7 @@
-.PHONY: naive keyboard
+.PHONY: flip keyboard
 
-naive:
-	go run ./cmd/naive
+flip:
+	go run ./cmd/basic-flip
 
 keyboard:
 	go run ./cmd/keyboard-controller
